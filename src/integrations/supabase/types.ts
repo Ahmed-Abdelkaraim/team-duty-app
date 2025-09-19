@@ -14,7 +14,78 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      attendance_records: {
+        Row: {
+          branch: string
+          category: string
+          created_at: string
+          id: string
+          member_code: string
+          member_name: string
+          status: string
+          updated_at: string
+          updated_by: string | null
+          updated_by_team: string | null
+        }
+        Insert: {
+          branch: string
+          category: string
+          created_at?: string
+          id?: string
+          member_code: string
+          member_name: string
+          status?: string
+          updated_at?: string
+          updated_by?: string | null
+          updated_by_team?: string | null
+        }
+        Update: {
+          branch?: string
+          category?: string
+          created_at?: string
+          id?: string
+          member_code?: string
+          member_name?: string
+          status?: string
+          updated_at?: string
+          updated_by?: string | null
+          updated_by_team?: string | null
+        }
+        Relationships: []
+      }
+      bus_times: {
+        Row: {
+          arrival_time: string | null
+          branch: string
+          created_at: string
+          departure_time: string | null
+          event_arrival_time: string | null
+          id: string
+          updated_at: string
+          updated_by: string | null
+        }
+        Insert: {
+          arrival_time?: string | null
+          branch: string
+          created_at?: string
+          departure_time?: string | null
+          event_arrival_time?: string | null
+          id?: string
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Update: {
+          arrival_time?: string | null
+          branch?: string
+          created_at?: string
+          departure_time?: string | null
+          event_arrival_time?: string | null
+          id?: string
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never

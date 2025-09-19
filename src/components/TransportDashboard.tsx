@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -6,8 +6,9 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Search, Clock, Bus, MapPin } from 'lucide-react';
 import { User, AttendanceMember } from '@/types/attendance';
-import { getMembersByBranch } from '@/utils/csvParser';
-import { useToast } from '@/components/ui/use-toast';
+import { supabase } from '@/integrations/supabase/client';
+import { useToast } from '@/hooks/use-toast';
+import { initializeAttendanceData } from '@/utils/csvInitializer';
 
 interface TransportDashboardProps {
   user: User;
@@ -16,11 +17,97 @@ interface TransportDashboardProps {
 
 export default function TransportDashboard({ user, onLogout }: TransportDashboardProps) {
   const [searchTerm, setSearchTerm] = useState('');
-  const [members, setMembers] = useState(() => getMembersByBranch(user.branch!));
+  const [members, setMembers] = useState<AttendanceMember[]>([]);
   const [busArrival, setBusArrival] = useState('');
   const [busDeparture, setBusDeparture] = useState('');
   const [eventArrival, setEventArrival] = useState('');
+  const [loading, setLoading] = useState(true);
   const { toast } = useToast();
+
+  // Initialize data and load members
+  useEffect(() => {
+    const initializeAndLoad = async () => {
+      await initializeAttendanceData();
+      await loadMembers();
+    };
+    initializeAndLoad();
+  }, [user.branch]);
+
+  // Load members from database
+  const loadMembers = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('attendance_records')
+        .select('*')
+        .eq('branch', user.branch);
+
+      if (error) throw error;
+
+      const attendanceMembers: AttendanceMember[] = data.map(record => ({
+        name: record.member_name,
+        branch: record.branch,
+        category: record.category,
+        status: record.status as 'حضور' | 'غياب',
+        code: record.member_code
+      }));
+
+      setMembers(attendanceMembers);
+    } catch (error) {
+      console.error('Error loading members:', error);
+      toast({
+        variant: "destructive",
+        title: "خطأ",
+        description: "حدث خطأ في تحميل البيانات",
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Load bus times
+  useEffect(() => {
+    const loadBusTimes = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('bus_times')
+          .select('*')
+          .eq('branch', user.branch)
+          .single();
+
+        if (data && !error) {
+          setBusArrival(data.arrival_time || '');
+          setBusDeparture(data.departure_time || '');
+          setEventArrival(data.event_arrival_time || '');
+        }
+      } catch (error) {
+        console.error('Error loading bus times:', error);
+      }
+    };
+    loadBusTimes();
+  }, [user.branch]);
+
+  // Real-time subscription
+  useEffect(() => {
+    const channel = supabase
+      .channel('attendance-changes')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'attendance_records',
+          filter: `branch=eq.${user.branch}`
+        },
+        () => {
+          loadMembers();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [user.branch]);
 
   const filteredMembers = useMemo(() => {
     return members.filter(member =>
@@ -29,20 +116,39 @@ export default function TransportDashboard({ user, onLogout }: TransportDashboar
     );
   }, [members, searchTerm]);
 
-  const handleAttendanceToggle = (memberCode: string) => {
-    setMembers(prev => prev.map(member => 
-      member.code === memberCode 
-        ? { ...member, status: member.status === 'حضور' ? 'غياب' : 'حضور' }
-        : member
-    ));
+  const handleAttendanceToggle = async (memberCode: string) => {
+    const member = members.find(m => m.code === memberCode);
+    if (!member) return;
+
+    const newStatus = member.status === 'حضور' ? 'غياب' : 'حضور';
     
-    toast({
-      title: "تم تحديث الحضور",
-      description: "تم تحديث حالة الحضور بنجاح",
-    });
+    try {
+      const { error } = await supabase
+        .from('attendance_records')
+        .update({ 
+          status: newStatus,
+          updated_by: user.name,
+          updated_by_team: user.team
+        })
+        .eq('member_code', memberCode);
+
+      if (error) throw error;
+
+      toast({
+        title: "تم تحديث الحضور",
+        description: "تم تحديث حالة الحضور بنجاح",
+      });
+    } catch (error) {
+      console.error('Error updating attendance:', error);
+      toast({
+        variant: "destructive",
+        title: "خطأ",
+        description: "حدث خطأ في تحديث الحضور",
+      });
+    }
   };
 
-  const handleBusTimeSubmit = () => {
+  const handleBusTimeSubmit = async () => {
     if (!busArrival || !busDeparture || !eventArrival) {
       toast({
         variant: "destructive",
@@ -52,10 +158,31 @@ export default function TransportDashboard({ user, onLogout }: TransportDashboar
       return;
     }
     
-    toast({
-      title: "تم حفظ أوقات الباص",
-      description: "تم حفظ مواعيد الباص بنجاح",
-    });
+    try {
+      const { error } = await supabase
+        .from('bus_times')
+        .upsert({
+          branch: user.branch,
+          arrival_time: busArrival,
+          departure_time: busDeparture,
+          event_arrival_time: eventArrival,
+          updated_by: user.name
+        });
+
+      if (error) throw error;
+
+      toast({
+        title: "تم حفظ أوقات الباص",
+        description: "تم حفظ مواعيد الباص بنجاح",
+      });
+    } catch (error) {
+      console.error('Error saving bus times:', error);
+      toast({
+        variant: "destructive",
+        title: "خطأ",
+        description: "حدث خطأ في حفظ أوقات الباص",
+      });
+    }
   };
 
   const attendedCount = members.filter(m => m.status === 'حضور').length;
@@ -120,7 +247,9 @@ export default function TransportDashboard({ user, onLogout }: TransportDashboar
               </div>
             </CardHeader>
             <CardContent className="space-y-3 max-h-96 overflow-y-auto">
-              {filteredMembers.map((member) => (
+              {loading ? (
+                <p className="text-center text-muted-foreground py-8">جاري التحميل...</p>
+              ) : filteredMembers.map((member) => (
                 <div
                   key={member.code}
                   className="flex items-center justify-between p-3 rounded-lg border bg-card hover:shadow-md transition-shadow"
@@ -139,6 +268,9 @@ export default function TransportDashboard({ user, onLogout }: TransportDashboar
                   </Button>
                 </div>
               ))}
+              {!loading && filteredMembers.length === 0 && (
+                <p className="text-center text-muted-foreground py-8">لا يوجد أعضاء</p>
+              )}
             </CardContent>
           </Card>
 
